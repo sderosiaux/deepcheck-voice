@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepCheck Voice</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        width: 320px;
+        padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: #fff;
+      }
+
+      .container {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 8px;
+      }
+
+      p {
+        font-size: 14px;
+        text-align: center;
+        opacity: 0.9;
+        margin-bottom: 8px;
+      }
+
+      button {
+        padding: 14px 20px;
+        font-size: 15px;
+        font-weight: 500;
+        border: none;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+      }
+
+      button:active:not(:disabled) {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      #openOverlay {
+        background: #fff;
+        color: #667eea;
+      }
+
+      .status {
+        text-align: center;
+        font-size: 13px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        min-height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .recording-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background: #ff6b6b;
+        border-radius: 50%;
+        margin-right: 8px;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+
+      .config-notice {
+        background: rgba(255, 255, 255, 0.2);
+        border: 2px solid #fff;
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .config-notice a {
+        color: #fff;
+        text-decoration: underline;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      .config-notice a:hover {
+        opacity: 0.8;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎙 DeepCheck Voice</h1>
+      <p>Coach de compréhension vocal</p>
+
+      <div class="config-notice hidden" id="configNotice">
+        ⚠️ Clé API non configurée<br />
+        <a id="openConfig">Ouvrir la configuration</a>
+      </div>
+
+      <div id="mainControls">
+        <button id="openOverlay">Ouvrir DeepCheck Voice</button>
+
+        <p style="font-size: 12px; opacity: 0.8; margin-top: 12px; text-align: center;">
+          Un dialogue apparaîtra sur la page avec l'historique complet de la conversation
+        </p>
+      </div>
+    </div>
+
+    <script src="popup-simple.js"></script>
+  </body>
+</html>

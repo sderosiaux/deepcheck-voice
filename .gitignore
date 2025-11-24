@@ -1,0 +1,23 @@
+# Chrome Extension
+*.pem
+*.crx
+.DS_Store
+
+# Logs
+*.log
+
+# Node modules (if any)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# User data
+.env
+config.local.js

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "DeepCheck Voice",
+  "description": "Coach de compréhension 100% voix sur n'importe quelle page.",
+  "version": "0.1",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://api.openai.com/*", "<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DeepCheck Voice"
+  },
+  "options_page": "options.html"
+}
