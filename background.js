@@ -1,7 +1,6 @@
 // background.js
 
 const MODEL_TUTOR = "gpt-5-mini";
-const MODEL_STT = "gpt-4o-mini-transcribe";
 const MODEL_TTS = "gpt-4o-mini-tts";
 const FETCH_TIMEOUT_MS = 60000;
 
@@ -22,14 +21,6 @@ function arrayBufferToBase64(ab) {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64) {
-  const binary = atob(base64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
 }
 
 async function fetchWithTimeout(url, options) {
@@ -80,27 +71,6 @@ function newSessionId() {
 // -----------------------------------------
 // APPELS OPENAI
 // -----------------------------------------
-
-async function transcribe(blob) {
-  requireApiKey();
-  const startTime = performance.now();
-
-  const fd = new FormData();
-  fd.append("file", blob, "audio.webm");
-  fd.append("model", MODEL_STT);
-  fd.append("language", "fr");
-
-  const res = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: fd
-  });
-
-  const data = await res.json();
-  const duration = (performance.now() - startTime).toFixed(0);
-  console.log(`[API] STT ${duration}ms — "${(data.text || "").slice(0, 60)}"`);
-  return data.text || "";
-}
 
 async function tutor(messages) {
   requireApiKey();
@@ -333,15 +303,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === "START_SESSION") {
         const { pageText } = msg.payload;
         sendResponse(await startSession(pageText));
-        return;
-      }
-
-      if (msg.type === "TRANSCRIBE_ONLY") {
-        const { audioBase64 } = msg.payload;
-        const ab = base64ToArrayBuffer(audioBase64);
-        const blob = new Blob([ab], { type: "audio/webm" });
-        const transcript = await transcribe(blob);
-        sendResponse({ transcript });
         return;
       }
 

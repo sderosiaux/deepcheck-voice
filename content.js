@@ -3,23 +3,17 @@
 if (!window.__deepcheckLoaded) {
   window.__deepcheckLoaded = true;
 
-  let mediaRecorder = null;
-  let mediaStream = null;
-  let chunks = [];
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  let recognition = null;
   let isRecording = false;
   let sessionId = null;
   let playbackSpeed = 1.5;
   let currentAudio = null;
-
-  function arrayBufferToBase64(ab) {
-    const bytes = new Uint8Array(ab);
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary);
-  }
+  let liveTranscript = "";
+  let liveBubble = null;
+  let liveBubbleContent = null;
+  let liveBubbleMeta = null;
 
   function base64ToArrayBuffer(base64) {
     const binary = atob(base64);
@@ -220,6 +214,25 @@ if (!window.__deepcheckLoaded) {
         color: #1e3a8a;
       }
 
+      .dc-msg-bubble.dc-live {
+        border-color: var(--dc-danger);
+        border-style: dashed;
+        color: var(--dc-text-muted);
+        font-style: italic;
+      }
+      .dc-msg-bubble.dc-live.has-text {
+        color: var(--dc-text);
+        font-style: normal;
+      }
+      .dc-msg-bubble.dc-live::after {
+        content: "▍";
+        display: inline-block;
+        margin-left: 2px;
+        color: var(--dc-danger);
+        animation: dc-caret 1s steps(1) infinite;
+      }
+      @keyframes dc-caret { 50% { opacity: 0; } }
+
       .dc-score {
         display: inline-flex;
         align-items: center;
@@ -237,6 +250,24 @@ if (!window.__deepcheckLoaded) {
       .dc-score.high { color: var(--dc-success); border-color: #bbf7d0; background: var(--dc-success-soft); }
       .dc-score.mid  { color: var(--dc-warn);   border-color: #fde68a; background: #fffbeb; }
       .dc-score.low  { color: var(--dc-danger); border-color: #fecaca; background: var(--dc-danger-soft); }
+
+      .dc-meta-rec {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--dc-danger);
+        text-transform: none;
+        letter-spacing: 0;
+        font-weight: 600;
+        font-size: 10px;
+      }
+      .dc-meta-rec-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--dc-danger);
+        animation: dc-pulse 1.4s ease-in-out infinite;
+      }
 
       .dc-controls {
         display: grid;
@@ -416,6 +447,61 @@ if (!window.__deepcheckLoaded) {
     return msg;
   }
 
+  // Bulle "live" pendant la transcription en direct
+  function createLiveBubble() {
+    const history = document.getElementById("dc-history");
+    if (!history) return;
+    const empty = history.querySelector(".dc-empty");
+    if (empty) empty.remove();
+
+    const meta = el("div", { class: "dc-msg-meta", text: "Vous" });
+    const recIndicator = el("span", { class: "dc-meta-rec" }, [
+      el("span", { class: "dc-meta-rec-dot" }),
+      "REC"
+    ]);
+    meta.appendChild(recIndicator);
+
+    const bubble = el("div", { class: "dc-msg-bubble dc-live", text: "À l'écoute…" });
+    const msg = el("div", { class: "dc-msg user" }, [meta, bubble]);
+    history.appendChild(msg);
+    history.scrollTop = history.scrollHeight;
+
+    liveBubble = msg;
+    liveBubbleContent = bubble;
+    liveBubbleMeta = meta;
+  }
+
+  function updateLiveBubble(text) {
+    if (!liveBubbleContent) return;
+    if (text && text.trim()) {
+      liveBubbleContent.textContent = text;
+      liveBubbleContent.classList.add("has-text");
+    } else {
+      liveBubbleContent.textContent = "À l'écoute…";
+      liveBubbleContent.classList.remove("has-text");
+    }
+    const history = document.getElementById("dc-history");
+    if (history) history.scrollTop = history.scrollHeight;
+  }
+
+  function finalizeLiveBubble(text) {
+    if (!liveBubble || !liveBubbleContent || !liveBubbleMeta) return;
+    liveBubbleContent.classList.remove("dc-live", "has-text");
+    liveBubbleContent.textContent = text;
+    const rec = liveBubbleMeta.querySelector(".dc-meta-rec");
+    if (rec) rec.remove();
+    liveBubble = null;
+    liveBubbleContent = null;
+    liveBubbleMeta = null;
+  }
+
+  function discardLiveBubble() {
+    if (liveBubble) liveBubble.remove();
+    liveBubble = null;
+    liveBubbleContent = null;
+    liveBubbleMeta = null;
+  }
+
   function updateLastUserScore(score) {
     if (score == null) return;
     const history = document.getElementById("dc-history");
@@ -435,10 +521,129 @@ if (!window.__deepcheckLoaded) {
     );
   }
 
-  function stopMic() {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => t.stop());
-      mediaStream = null;
+  // ---------------------------
+  // SPEECH RECOGNITION (on-device si dispo)
+  // ---------------------------
+
+  async function tryEnableLocalRecognition(rec) {
+    if (!SR.available) return;
+    try {
+      const status = await SR.available({ langs: ["fr-FR"], processLocally: true });
+      if (status === "available") {
+        rec.processLocally = true;
+        return;
+      }
+      if (status === "downloadable" && SR.install) {
+        setStatus("Téléchargement du modèle vocal local…", "loading");
+        const ok = await SR.install({ langs: ["fr-FR"], processLocally: true });
+        if (ok) rec.processLocally = true;
+      }
+    } catch (e) {
+      console.warn("[DeepCheck] On-device recognition unavailable:", e.message);
+    }
+  }
+
+  async function startRecognition() {
+    if (!SR) {
+      throw new Error("Speech Recognition non supporté (Chrome/Edge requis).");
+    }
+
+    const rec = new SR();
+    rec.lang = "fr-FR";
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    await tryEnableLocalRecognition(rec);
+
+    liveTranscript = "";
+
+    rec.onresult = (e) => {
+      let final = "";
+      let interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
+      }
+      liveTranscript = (final + " " + interim).trim();
+      updateLiveBubble(liveTranscript);
+    };
+
+    rec.onerror = (e) => {
+      console.error("[DeepCheck] Recognition error:", e.error);
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        addMessage("tutor", "❌ Permission micro refusée. Autorisez le micro pour ce site.");
+        setStatus("Micro refusé.");
+      } else if (e.error === "language-not-supported") {
+        addMessage("tutor", "❌ Modèle vocal français non disponible.");
+        setStatus("Langue non supportée.");
+      } else if (e.error === "no-speech") {
+        // attendu si l'utilisateur ne parle pas — onend gérera
+      } else {
+        setStatus("Erreur reconnaissance: " + e.error);
+      }
+    };
+
+    rec.onend = () => {
+      onRecognitionEnded();
+    };
+
+    recognition = rec;
+    rec.start();
+  }
+
+  function stopRecognition() {
+    if (recognition) {
+      try { recognition.stop(); } catch {}
+    }
+  }
+
+  async function onRecognitionEnded() {
+    isRecording = false;
+    const recordBtn = document.getElementById("dc-record");
+    if (recordBtn) recordBtn.textContent = "🎙 Répondre";
+
+    const transcript = liveTranscript.trim();
+    liveTranscript = "";
+    recognition = null;
+
+    if (!transcript) {
+      discardLiveBubble();
+      setStatus("Aucune voix détectée — réessayez.");
+      return;
+    }
+
+    finalizeLiveBubble(transcript);
+    setStatus("Le tuteur analyse votre réponse…", "loading");
+
+    try {
+      const resp = await send({
+        type: "CONTINUE_ANSWER",
+        payload: { sessionId, transcript }
+      });
+
+      if (resp.masteryScore != null) updateLastUserScore(resp.masteryScore);
+
+      const tutorMsg = (resp.feedback ? resp.feedback + " " : "") + (resp.question || "");
+      if (tutorMsg.trim()) addMessage("tutor", tutorMsg);
+
+      if (resp.audioBase64) playBase64Audio(resp.audioBase64);
+
+      if (resp.sessionDone) {
+        setStatus("Session terminée ✓");
+        addMessage("tutor", "🎉 Session terminée. Vous avez bien progressé.");
+        if (recordBtn) recordBtn.disabled = true;
+        const stopBtn = document.getElementById("dc-stop");
+        if (stopBtn) stopBtn.disabled = true;
+        const startBtn = document.getElementById("dc-start");
+        if (startBtn) startBtn.disabled = false;
+      } else {
+        setStatus("Écoutez puis cliquez sur « Répondre ».");
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus("Erreur: " + e.message);
+      addMessage("tutor", "❌ " + e.message);
     }
   }
 
@@ -517,82 +722,26 @@ if (!window.__deepcheckLoaded) {
   recordBtn.addEventListener("click", async () => {
     if (!isRecording) {
       try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        chunks = [];
-        mediaRecorder = new MediaRecorder(mediaStream);
-        mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-        mediaRecorder.onstop = handleRecordingStop;
-        mediaRecorder.start();
+        createLiveBubble();
+        await startRecognition();
         isRecording = true;
         recordBtn.textContent = "⏹ Stop";
-        setStatus("Enregistrement en cours…", "recording");
-      } catch (error) {
-        console.error("Erreur micro:", error);
-        setStatus("Accès au micro refusé.");
-        addMessage("tutor", "❌ Impossible d'accéder au microphone. Vérifiez les permissions du site.");
+        const local = recognition?.processLocally ? " (local)" : "";
+        setStatus(`Enregistrement${local} — parlez maintenant…`, "recording");
+      } catch (e) {
+        console.error(e);
+        discardLiveBubble();
+        setStatus("Erreur: " + e.message);
+        addMessage("tutor", "❌ " + e.message);
       }
     } else {
-      mediaRecorder.stop();
-      isRecording = false;
-      recordBtn.textContent = "🎙 Répondre";
       setStatus("Traitement…", "loading");
+      stopRecognition();
     }
   });
 
-  async function handleRecordingStop() {
-    stopMic();
-    const blob = new Blob(chunks, { type: "audio/webm" });
-    chunks = [];
-
-    try {
-      setStatus("Transcription de votre réponse…", "loading");
-      const ab = await blob.arrayBuffer();
-      const audioBase64 = arrayBufferToBase64(ab);
-
-      const { transcript } = await send({
-        type: "TRANSCRIBE_ONLY",
-        payload: { audioBase64 }
-      });
-
-      if (!transcript || !transcript.trim()) {
-        setStatus("Aucune voix détectée — réessayez.");
-        addMessage("tutor", "🎙 Je n'ai rien entendu. Cliquez sur « Répondre » et parlez plus près du micro.");
-        return;
-      }
-
-      addMessage("user", transcript);
-      setStatus("Le tuteur analyse votre réponse…", "loading");
-
-      const resp = await send({
-        type: "CONTINUE_ANSWER",
-        payload: { sessionId, transcript }
-      });
-
-      if (resp.masteryScore != null) updateLastUserScore(resp.masteryScore);
-
-      const tutorMsg = (resp.feedback ? resp.feedback + " " : "") + (resp.question || "");
-      if (tutorMsg.trim()) addMessage("tutor", tutorMsg);
-
-      playBase64Audio(resp.audioBase64);
-
-      if (resp.sessionDone) {
-        setStatus("Session terminée ✓");
-        addMessage("tutor", "🎉 Session terminée. Vous avez bien progressé.");
-        recordBtn.disabled = true;
-        stopBtn.disabled = true;
-        startBtn.disabled = false;
-      } else {
-        setStatus("Écoutez puis cliquez sur « Répondre ».");
-      }
-    } catch (e) {
-      console.error(e);
-      setStatus("Erreur: " + e.message);
-      addMessage("tutor", "❌ " + e.message);
-    }
-  }
-
   stopBtn.addEventListener("click", async () => {
-    stopMic();
+    stopRecognition();
     if (currentAudio) {
       currentAudio.pause();
       currentAudio = null;
