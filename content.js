@@ -14,6 +14,10 @@ if (!window.__deepcheckLoaded) {
   let explicitStop = false;
   let aborted = false;
   let submitGeneration = 0;
+  let sessionStartGen = 0;
+  let recordOpGen = 0;
+  let silenceRestartCount = 0;
+  const MAX_SILENCE_RESTARTS = 5;
   let lastRecognitionError = null;
 
   let accumulatedFinal = "";
@@ -65,6 +69,12 @@ if (!window.__deepcheckLoaded) {
       }
     });
     audio.addEventListener("error", () => {
+      if (currentAudioUrl === url) {
+        URL.revokeObjectURL(url);
+        currentAudioUrl = null;
+      }
+    });
+    audio.addEventListener("abort", () => {
       if (currentAudioUrl === url) {
         URL.revokeObjectURL(url);
         currentAudioUrl = null;
@@ -511,7 +521,7 @@ if (!window.__deepcheckLoaded) {
     }
   }
 
-  async function createRecognizer() {
+  async function createRecognizer(opGen) {
     if (!SR) throw new Error("Speech Recognition non supporté (Chrome/Edge requis).");
 
     const rec = new SR();
@@ -520,6 +530,12 @@ if (!window.__deepcheckLoaded) {
     rec.interimResults = true;
 
     await tryEnableLocalRecognition(rec);
+
+    // Abort check après l'install (peut prendre du temps)
+    if (aborted || opGen !== recordOpGen) {
+      try { rec.abort(); } catch {}
+      return null;
+    }
 
     const token = ++recognitionToken;
     rec._dcToken = token;
@@ -537,6 +553,8 @@ if (!window.__deepcheckLoaded) {
       }
       currentRecFinal = final;
       currentRecInterim = interim;
+      // Reset compteur de silence dès qu'on reçoit du texte
+      if (final || interim) silenceRestartCount = 0;
       const merged = [accumulatedFinal, final, interim].filter(Boolean).join(" ").trim();
       updateLiveBubble(merged);
     };
@@ -599,12 +617,18 @@ if (!window.__deepcheckLoaded) {
 
     // Auto-end (silence prolongé) sans stop explicite → on relance un nouveau recognizer
     if (!explicitStop && isRecording) {
-      try {
-        await createRecognizer();
-        return;
-      } catch (e) {
-        console.warn("[DeepCheck] Restart failed, finalizing:", e.message);
-        // Fallback: on finalise avec ce qu'on a
+      silenceRestartCount++;
+      if (silenceRestartCount > MAX_SILENCE_RESTARTS) {
+        console.warn(`[DeepCheck] Silence cap atteint (${MAX_SILENCE_RESTARTS}), finalisation.`);
+        silenceRestartCount = 0;
+        // Tombe dans finalizeAndSubmit
+      } else {
+        try {
+          const r = await createRecognizer(recordOpGen);
+          if (r) return;
+        } catch (e) {
+          console.warn("[DeepCheck] Restart failed, finalizing:", e.message);
+        }
       }
     }
 
@@ -724,6 +748,9 @@ if (!window.__deepcheckLoaded) {
   function resetAll() {
     aborted = true;
     submitGeneration++;
+    sessionStartGen++;
+    recordOpGen++;
+    silenceRestartCount = 0;
     abortRecognition();
     stopAndCleanupAudio();
     discardLiveBubble();
@@ -751,6 +778,8 @@ if (!window.__deepcheckLoaded) {
     stopBtn.disabled = true;
     setStatus("Extraction du texte de la page…", "loading");
 
+    const myGen = ++sessionStartGen;
+
     try {
       const pageText = extractPageText();
       if (!pageText || pageText.length < 50) {
@@ -760,6 +789,9 @@ if (!window.__deepcheckLoaded) {
       aborted = false;
       const resp = await send({ type: "START_SESSION", payload: { pageText } });
 
+      // Race: si reset/Démarrer plus récent → on jette cette réponse
+      if (myGen !== sessionStartGen || aborted) return;
+
       sessionId = resp.sessionId;
       if (resp.question) addMessage("tutor", resp.question);
       if (resp.audioBase64) playBase64Audio(resp.audioBase64);
@@ -768,6 +800,7 @@ if (!window.__deepcheckLoaded) {
       recordBtn.disabled = false;
       stopBtn.disabled = false;
     } catch (e) {
+      if (myGen !== sessionStartGen) return;
       if (e.needsConfig) {
         setStatus("Clé API non configurée — ouvrez les options.");
         addMessage("tutor", "⚠️ Veuillez configurer votre clé API OpenAI dans les options.");
@@ -785,6 +818,7 @@ if (!window.__deepcheckLoaded) {
 
     if (!isRecording) {
       // Démarrage
+      const myOpGen = ++recordOpGen;
       isStarting = true;
       recordBtn.disabled = true;
       aborted = false;
@@ -793,10 +827,16 @@ if (!window.__deepcheckLoaded) {
       accumulatedFinal = "";
       currentRecFinal = "";
       currentRecInterim = "";
+      silenceRestartCount = 0;
       createLiveBubble();
 
       try {
-        await createRecognizer();
+        const r = await createRecognizer(myOpGen);
+        // Abort pendant l'install de la langue ?
+        if (!r || myOpGen !== recordOpGen || aborted) {
+          isStarting = false;
+          return;
+        }
         isStarting = false;
         isRecording = true;
         recordBtn.textContent = "⏹ Stop";
@@ -804,6 +844,7 @@ if (!window.__deepcheckLoaded) {
         const local = recognition?.processLocally ? " (local)" : "";
         setStatus(`Enregistrement${local} — parlez maintenant…`, "recording");
       } catch (e) {
+        if (myOpGen !== recordOpGen) return;
         console.error(e);
         isStarting = false;
         discardLiveBubble();
@@ -819,7 +860,16 @@ if (!window.__deepcheckLoaded) {
       recordBtn.textContent = "🎙 Répondre";
       setStatus("Traitement…", "loading");
       if (recognition) {
-        try { recognition.stop(); } catch {}
+        try {
+          recognition.stop();
+        } catch (err) {
+          console.warn("[DeepCheck] recognition.stop() threw, finalizing:", err);
+          // Fallback: finaliser nous-mêmes si stop() crashe
+          finalizeAndSubmit();
+        }
+      } else {
+        // Pas de recognizer actif — finaliser direct
+        finalizeAndSubmit();
       }
     }
   });

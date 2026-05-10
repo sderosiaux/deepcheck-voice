@@ -239,12 +239,14 @@ Voici le texte que l'utilisateur a sous les yeux.
 """${pageText.slice(0, 12000)}"""
 
 INSTRUCTIONS POUR LA PREMIÈRE QUESTION:
-1. Identifie les 3-5 CONCEPTS PRINCIPAUX du texte
+1. Identifie les 3-5 CONCEPTS PRINCIPAUX du texte (en silence, ne les liste pas)
 2. Commence par le concept le PLUS FONDAMENTAL
-3. Pose UNE question qui teste l'intuition de base de ce concept
+3. Pose UNE question courte et directe qui teste l'intuition de base
 4. Dans "concept_covered", écris "introduction"
+5. ⚠️ Le champ "feedback" DOIT être une chaîne vide "" à la première question (rien à commenter)
+6. Ne fais AUCUN préambule, salutation, ou présentation du texte. Va droit à la question.
 
-Réponds en JSON strict avec le champ "concept_covered".
+Réponds en JSON strict.
 `
     }
   ];
@@ -252,13 +254,11 @@ Réponds en JSON strict avec le champ "concept_covered".
   const result = await tutor(messages);
   messages.push({ role: "assistant", content: JSON.stringify(result) });
 
+  // Première question: on parle UNIQUEMENT la question (pas de feedback préambule)
   let spoken;
   try {
-    spoken = await ttsSpeak(
-      (result.feedback ? result.feedback + " " : "") + (result.question || "")
-    );
+    spoken = await ttsSpeak(result.question || "");
   } catch (e) {
-    // Pas de session sauvée si TTS échoue → pas d'orphelin
     throw e;
   }
 
