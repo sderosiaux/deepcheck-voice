@@ -323,7 +323,11 @@ if (!window.__deepcheckLoaded) {
   // SPEECH RECOGNITION
   // ---------------------------
 
+  // Le modèle on-device (SODA) a des interim results moins fiables selon les
+  // versions Chrome. Par défaut on utilise le mode cloud (plus fluide).
+  // Pour activer le local: window.__deepcheckLocal = true dans la console.
   async function tryEnableLocalRecognition(rec) {
+    if (!window.__deepcheckLocal) return;
     if (!SR.available) return;
     try {
       const status = await SR.available({ langs: ["fr-FR"], processLocally: true });
@@ -379,9 +383,9 @@ if (!window.__deepcheckLoaded) {
         if (e.results[i].isFinal) final += t;
         else interim += t;
       }
+      console.debug("[DeepCheck] result", { final, interim, isFinal: e.results[e.results.length - 1]?.isFinal });
       currentRecFinal = final;
       currentRecInterim = interim;
-      // Reset compteur de silence dès qu'on reçoit du texte
       if (final || interim) silenceRestartCount = 0;
       const merged = [accumulatedFinal, final, interim].filter(Boolean).join(" ").trim();
       updateLiveBubble(merged);
@@ -389,10 +393,14 @@ if (!window.__deepcheckLoaded) {
 
     rec.onerror = (e) => {
       if (rec._dcToken !== recognitionToken) return;
-      console.error("[DeepCheck] Recognition error:", e.error);
+      console.error("[DeepCheck] Recognition error:", e.error, e.message);
       if (e.error === "no-speech") return;
       lastRecognitionError = e.error;
     };
+
+    rec.onaudiostart = () => console.debug("[DeepCheck] audio start");
+    rec.onspeechstart = () => console.debug("[DeepCheck] speech start");
+    rec.onspeechend = () => console.debug("[DeepCheck] speech end");
 
     rec.onend = () => {
       if (rec._dcToken !== recognitionToken) return;
@@ -691,9 +699,9 @@ if (!window.__deepcheckLoaded) {
         isRecording = true;
         recordBtn.textContent = "⏹ Stop";
         recordBtn.disabled = false;
-        const local = recognition?.processLocally ? " (local)" : "";
+        const mode = recognition?.processLocally ? "local" : "cloud";
         const dev = getDeviceLabel(selectedDeviceId);
-        setStatus(`REC${local} — ${dev}`, "recording");
+        setStatus(`REC ${mode} — ${dev}`, "recording");
       } catch (e) {
         if (myOpGen !== recordOpGen) return;
         console.error(e);
