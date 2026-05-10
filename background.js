@@ -3,7 +3,7 @@
 const MODEL_TUTOR = "gpt-5-mini";
 const MODEL_STT = "gpt-4o-mini-transcribe";
 const MODEL_TTS = "gpt-4o-mini-tts";
-const FETCH_TIMEOUT_MS = 30000;
+const FETCH_TIMEOUT_MS = 60000;
 
 let OPENAI_API_KEY = null;
 
@@ -42,6 +42,11 @@ async function fetchWithTimeout(url, options) {
       throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`);
     }
     return res;
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`Délai dépassé (${FETCH_TIMEOUT_MS / 1000}s). Réessayez.`);
+    }
+    throw e;
   } finally {
     clearTimeout(t);
   }
