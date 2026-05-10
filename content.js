@@ -30,11 +30,6 @@ if (!window.__deepcheckLoaded) {
   let currentAudio = null;
   let currentAudioUrl = null;
 
-  // Audio input device
-  let selectedDeviceId = null; // null = système par défaut
-  let bindingStream = null;
-  let cachedDevices = [];
-
   let liveBubble = null;
   let liveBubbleContent = null;
   let liveBubbleMeta = null;
@@ -103,59 +98,6 @@ if (!window.__deepcheckLoaded) {
   }
 
   // ---------------------------
-  // AUDIO INPUT DEVICES
-  // ---------------------------
-
-  function getDeviceLabel(id) {
-    if (!id) return "Micro système";
-    const d = cachedDevices.find((x) => x.deviceId === id);
-    return d?.label || "Micro inconnu";
-  }
-
-  async function refreshDevices() {
-    try {
-      const all = await navigator.mediaDevices.enumerateDevices();
-      cachedDevices = all.filter((d) => d.kind === "audioinput");
-      populateMicSelect();
-    } catch (e) {
-      console.warn("[DeepCheck] enumerateDevices failed:", e.message);
-    }
-  }
-
-  function populateMicSelect() {
-    const sel = document.getElementById("dc-mic");
-    if (!sel) return;
-    const current = selectedDeviceId || "";
-    sel.textContent = "";
-    sel.appendChild(el("option", { value: "", text: "🎙 Système" }));
-    cachedDevices.forEach((d, i) => {
-      const label = d.label || `Micro ${i + 1}`;
-      sel.appendChild(el("option", { value: d.deviceId, text: label }));
-    });
-    sel.value = current;
-  }
-
-  async function bindMic() {
-    releaseBindingStream();
-    if (!selectedDeviceId) return; // micro par défaut
-    try {
-      bindingStream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: selectedDeviceId } }
-      });
-    } catch (e) {
-      console.warn("[DeepCheck] Bind mic failed, fallback default:", e.message);
-      bindingStream = null;
-    }
-  }
-
-  function releaseBindingStream() {
-    if (bindingStream) {
-      bindingStream.getTracks().forEach((t) => t.stop());
-      bindingStream = null;
-    }
-  }
-
-  // ---------------------------
   // OVERLAY (styles loaded via content.css by background.js insertCSS)
   // ---------------------------
 
@@ -182,9 +124,6 @@ if (!window.__deepcheckLoaded) {
     const titleDot = el("span", { class: "dc-title-dot" });
     const title = el("div", { class: "dc-title" }, [titleDot, "DeepCheck Voice"]);
 
-    const mic = el("select", { class: "dc-speed dc-mic-select", id: "dc-mic", title: "Microphone" });
-    mic.appendChild(el("option", { value: "", text: "🎙 Système" }));
-
     const speed = el("select", { class: "dc-speed", id: "dc-speed", title: "Vitesse de lecture" });
     for (const v of ["0.75", "1", "1.25", "1.5", "1.75", "2"]) {
       const opt = el("option", { value: v, text: `${v}×` });
@@ -192,7 +131,7 @@ if (!window.__deepcheckLoaded) {
       speed.appendChild(opt);
     }
     const closeBtn = el("button", { class: "dc-icon-btn", id: "dc-close", title: "Fermer", text: "✕" });
-    const headerCtrls = el("div", { class: "dc-header-controls" }, [mic, speed, closeBtn]);
+    const headerCtrls = el("div", { class: "dc-header-controls" }, [speed, closeBtn]);
     const header = el("div", { class: "dc-header" }, [title, headerCtrls]);
 
     const empty = el("div", { class: "dc-empty" }, [
@@ -361,14 +300,6 @@ if (!window.__deepcheckLoaded) {
       return null;
     }
 
-    // Bind du micro spécifique avant start (workaround SpeechRecognition)
-    await bindMic();
-    if (aborted || opGen !== recordOpGen) {
-      releaseBindingStream();
-      try { rec.abort(); } catch {}
-      return null;
-    }
-
     const token = ++recognitionToken;
     rec._dcToken = token;
     currentRecFinal = "";
@@ -473,7 +404,6 @@ if (!window.__deepcheckLoaded) {
 
   async function finalizeAndSubmit() {
     recognition = null;
-    releaseBindingStream();
     isRecording = false;
     explicitStop = false;
     const transcript = accumulatedFinal.trim();
@@ -582,26 +512,6 @@ if (!window.__deepcheckLoaded) {
     if (currentAudio) currentAudio.playbackRate = playbackSpeed;
   });
 
-  const micSelect = document.getElementById("dc-mic");
-
-  // Charger préférence + énumérer devices
-  chrome.storage.local.get(["selectedMicId"], (r) => {
-    selectedDeviceId = r.selectedMicId || null;
-    if (micSelect) micSelect.value = selectedDeviceId || "";
-    refreshDevices();
-  });
-
-  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-    navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
-  }
-
-  if (micSelect) {
-    micSelect.addEventListener("change", (e) => {
-      selectedDeviceId = e.target.value || null;
-      chrome.storage.local.set({ selectedMicId: selectedDeviceId });
-    });
-  }
-
   function resetAll() {
     aborted = true;
     submitGeneration++;
@@ -609,7 +519,6 @@ if (!window.__deepcheckLoaded) {
     recordOpGen++;
     silenceRestartCount = 0;
     abortRecognition();
-    releaseBindingStream();
     stopAndCleanupAudio();
     discardLiveBubble();
     accumulatedFinal = "";
@@ -700,8 +609,7 @@ if (!window.__deepcheckLoaded) {
         recordBtn.textContent = "⏹ Stop";
         recordBtn.disabled = false;
         const mode = recognition?.processLocally ? "local" : "cloud";
-        const dev = getDeviceLabel(selectedDeviceId);
-        setStatus(`REC ${mode} — ${dev}`, "recording");
+        setStatus(`REC ${mode} — parlez maintenant…`, "recording");
       } catch (e) {
         if (myOpGen !== recordOpGen) return;
         console.error(e);

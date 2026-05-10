@@ -71,8 +71,6 @@
 .dc-speed:hover { border-color: var(--dc-border-strong); }
 .dc-speed:focus { outline: none; border-color: var(--dc-accent); box-shadow: 0 0 0 3px var(--dc-accent-soft); }
 
-.dc-mic-select { max-width: 130px; text-overflow: ellipsis; }
-
 .dc-icon-btn {
   width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
