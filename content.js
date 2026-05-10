@@ -30,6 +30,11 @@ if (!window.__deepcheckLoaded) {
   let currentAudio = null;
   let currentAudioUrl = null;
 
+  // Audio input device
+  let selectedDeviceId = null; // null = système par défaut
+  let bindingStream = null;
+  let cachedDevices = [];
+
   let liveBubble = null;
   let liveBubbleContent = null;
   let liveBubbleMeta = null;
@@ -98,247 +103,60 @@ if (!window.__deepcheckLoaded) {
   }
 
   // ---------------------------
-  // STYLES
+  // AUDIO INPUT DEVICES
   // ---------------------------
 
-  function injectStyles() {
-    if (document.getElementById("deepcheck-styles")) return;
-    const style = document.createElement("style");
-    style.id = "deepcheck-styles";
-    style.textContent = `
-      #deepcheck-overlay {
-        --dc-bg: #ffffff;
-        --dc-surface: #fafafa;
-        --dc-border: #e5e7eb;
-        --dc-border-strong: #d1d5db;
-        --dc-text: #111827;
-        --dc-text-muted: #6b7280;
-        --dc-text-soft: #9ca3af;
-        --dc-accent: #2563eb;
-        --dc-accent-hover: #1d4ed8;
-        --dc-accent-soft: #eff6ff;
-        --dc-danger: #dc2626;
-        --dc-danger-soft: #fef2f2;
-        --dc-success: #16a34a;
-        --dc-success-soft: #f0fdf4;
-        --dc-warn: #d97706;
-        --dc-shadow: 0 1px 3px rgba(0,0,0,.04), 0 12px 32px -8px rgba(17,24,39,.12);
-        --dc-radius: 14px;
+  function getDeviceLabel(id) {
+    if (!id) return "Micro système";
+    const d = cachedDevices.find((x) => x.deviceId === id);
+    return d?.label || "Micro inconnu";
+  }
 
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        width: 400px;
-        max-height: 80vh;
-        background: var(--dc-bg);
-        border: 1px solid var(--dc-border);
-        border-radius: var(--dc-radius);
-        box-shadow: var(--dc-shadow);
-        z-index: 2147483647;
-        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
-        color: var(--dc-text);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        font-size: 14px;
-        line-height: 1.5;
-      }
+  async function refreshDevices() {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      cachedDevices = all.filter((d) => d.kind === "audioinput");
+      populateMicSelect();
+    } catch (e) {
+      console.warn("[DeepCheck] enumerateDevices failed:", e.message);
+    }
+  }
 
-      #deepcheck-overlay * { box-sizing: border-box; }
+  function populateMicSelect() {
+    const sel = document.getElementById("dc-mic");
+    if (!sel) return;
+    const current = selectedDeviceId || "";
+    sel.textContent = "";
+    sel.appendChild(el("option", { value: "", text: "🎙 Système" }));
+    cachedDevices.forEach((d, i) => {
+      const label = d.label || `Micro ${i + 1}`;
+      sel.appendChild(el("option", { value: d.deviceId, text: label }));
+    });
+    sel.value = current;
+  }
 
-      .dc-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 14px 16px;
-        border-bottom: 1px solid var(--dc-border);
-        background: var(--dc-bg);
-      }
+  async function bindMic() {
+    releaseBindingStream();
+    if (!selectedDeviceId) return; // micro par défaut
+    try {
+      bindingStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: selectedDeviceId } }
+      });
+    } catch (e) {
+      console.warn("[DeepCheck] Bind mic failed, fallback default:", e.message);
+      bindingStream = null;
+    }
+  }
 
-      .dc-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
-      .dc-title-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dc-accent); }
-
-      .dc-header-controls { display: flex; align-items: center; gap: 8px; }
-
-      .dc-speed {
-        appearance: none;
-        background: var(--dc-surface);
-        border: 1px solid var(--dc-border);
-        color: var(--dc-text);
-        border-radius: 8px;
-        padding: 5px 24px 5px 10px;
-        font-size: 12px;
-        font-weight: 500;
-        cursor: pointer;
-        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-        background-repeat: no-repeat;
-        background-position: right 8px center;
-        transition: border-color .15s ease, background-color .15s ease;
-      }
-      .dc-speed:hover { border-color: var(--dc-border-strong); }
-      .dc-speed:focus { outline: none; border-color: var(--dc-accent); box-shadow: 0 0 0 3px var(--dc-accent-soft); }
-
-      .dc-icon-btn {
-        width: 28px; height: 28px;
-        display: inline-flex; align-items: center; justify-content: center;
-        border: 1px solid var(--dc-border);
-        background: var(--dc-bg);
-        color: var(--dc-text-muted);
-        border-radius: 8px;
-        cursor: pointer;
-        transition: all .15s ease;
-        font-size: 14px; line-height: 1;
-      }
-      .dc-icon-btn:hover { background: var(--dc-surface); color: var(--dc-text); border-color: var(--dc-border-strong); }
-
-      .dc-history {
-        flex: 1;
-        overflow-y: auto;
-        padding: 16px;
-        background: var(--dc-surface);
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        min-height: 200px;
-        max-height: 440px;
-      }
-      .dc-history::-webkit-scrollbar { width: 6px; }
-      .dc-history::-webkit-scrollbar-thumb { background: var(--dc-border-strong); border-radius: 3px; }
-
-      .dc-empty { margin: auto; text-align: center; color: var(--dc-text-muted); padding: 24px 16px; }
-      .dc-empty-title { font-size: 14px; font-weight: 600; color: var(--dc-text); margin-bottom: 4px; }
-      .dc-empty-sub { font-size: 13px; color: var(--dc-text-muted); }
-
-      .dc-msg { display: flex; flex-direction: column; gap: 4px; animation: dc-in .2s ease; }
-      @keyframes dc-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-
-      .dc-msg-meta {
-        display: flex; align-items: center; gap: 8px;
-        font-size: 11px; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 0.04em;
-        color: var(--dc-text-soft);
-      }
-
-      .dc-msg-bubble {
-        background: var(--dc-bg);
-        border: 1px solid var(--dc-border);
-        border-radius: 10px;
-        padding: 10px 12px;
-        font-size: 14px;
-        color: var(--dc-text);
-        white-space: pre-wrap;
-        word-wrap: break-word;
-      }
-
-      .dc-msg.tutor .dc-msg-bubble {
-        border-color: var(--dc-accent-soft);
-        background: var(--dc-accent-soft);
-        color: #1e3a8a;
-      }
-
-      .dc-msg-bubble.dc-live {
-        border-color: var(--dc-danger);
-        border-style: dashed;
-        color: var(--dc-text-muted);
-        font-style: italic;
-      }
-      .dc-msg-bubble.dc-live.has-text { color: var(--dc-text); font-style: normal; }
-      .dc-msg-bubble.dc-live::after {
-        content: "▍";
-        display: inline-block;
-        margin-left: 2px;
-        color: var(--dc-danger);
-        animation: dc-caret 1s steps(1) infinite;
-      }
-      @keyframes dc-caret { 50% { opacity: 0; } }
-
-      .dc-score {
-        display: inline-flex; align-items: center; gap: 4px;
-        background: var(--dc-bg); border: 1px solid var(--dc-border);
-        padding: 2px 8px; border-radius: 999px;
-        font-size: 10px; font-weight: 600;
-        color: var(--dc-text-muted);
-        text-transform: none; letter-spacing: 0;
-      }
-      .dc-score.high { color: var(--dc-success); border-color: #bbf7d0; background: var(--dc-success-soft); }
-      .dc-score.mid  { color: var(--dc-warn);   border-color: #fde68a; background: #fffbeb; }
-      .dc-score.low  { color: var(--dc-danger); border-color: #fecaca; background: var(--dc-danger-soft); }
-
-      .dc-meta-rec {
-        display: inline-flex; align-items: center; gap: 4px;
-        color: var(--dc-danger);
-        text-transform: none; letter-spacing: 0;
-        font-weight: 600; font-size: 10px;
-      }
-      .dc-meta-rec-dot {
-        width: 6px; height: 6px; border-radius: 50%;
-        background: var(--dc-danger);
-        animation: dc-pulse 1.4s ease-in-out infinite;
-      }
-
-      .dc-controls {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 8px;
-        padding: 12px 16px;
-        border-top: 1px solid var(--dc-border);
-        background: var(--dc-bg);
-      }
-
-      .dc-btn {
-        appearance: none;
-        border: 1px solid var(--dc-border);
-        background: var(--dc-bg);
-        color: var(--dc-text);
-        padding: 9px 12px;
-        border-radius: 8px;
-        font-size: 13px; font-weight: 500;
-        cursor: pointer;
-        transition: all .15s ease;
-        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-      }
-      .dc-btn:hover:not(:disabled) { background: var(--dc-surface); border-color: var(--dc-border-strong); }
-      .dc-btn:active:not(:disabled) { transform: translateY(0.5px); }
-      .dc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-      .dc-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--dc-accent-soft); }
-
-      .dc-btn.primary { background: var(--dc-accent); border-color: var(--dc-accent); color: #fff; }
-      .dc-btn.primary:hover:not(:disabled) { background: var(--dc-accent-hover); border-color: var(--dc-accent-hover); }
-      .dc-btn.record { background: var(--dc-danger); border-color: var(--dc-danger); color: #fff; }
-      .dc-btn.record:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
-
-      .dc-status {
-        padding: 10px 16px;
-        font-size: 12px;
-        color: var(--dc-text-muted);
-        border-top: 1px solid var(--dc-border);
-        background: var(--dc-surface);
-        display: flex; align-items: center; gap: 8px;
-      }
-
-      .dc-rec-dot {
-        width: 8px; height: 8px;
-        background: var(--dc-danger);
-        border-radius: 50%;
-        animation: dc-pulse 1.4s ease-in-out infinite;
-      }
-      @keyframes dc-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
-
-      .dc-spinner {
-        width: 12px; height: 12px;
-        border: 1.5px solid var(--dc-border-strong);
-        border-top-color: var(--dc-accent);
-        border-radius: 50%;
-        animation: dc-spin .8s linear infinite;
-      }
-      @keyframes dc-spin { to { transform: rotate(360deg); } }
-    `;
-    document.head.appendChild(style);
+  function releaseBindingStream() {
+    if (bindingStream) {
+      bindingStream.getTracks().forEach((t) => t.stop());
+      bindingStream = null;
+    }
   }
 
   // ---------------------------
-  // OVERLAY
+  // OVERLAY (styles loaded via content.css by background.js insertCSS)
   // ---------------------------
 
   function el(tag, attrs = {}, children = []) {
@@ -360,19 +178,21 @@ if (!window.__deepcheckLoaded) {
     if (document.getElementById("deepcheck-overlay")) {
       return document.getElementById("deepcheck-overlay");
     }
-    injectStyles();
 
     const titleDot = el("span", { class: "dc-title-dot" });
     const title = el("div", { class: "dc-title" }, [titleDot, "DeepCheck Voice"]);
 
-    const speed = el("select", { class: "dc-speed", id: "dc-speed" });
+    const mic = el("select", { class: "dc-speed dc-mic-select", id: "dc-mic", title: "Microphone" });
+    mic.appendChild(el("option", { value: "", text: "🎙 Système" }));
+
+    const speed = el("select", { class: "dc-speed", id: "dc-speed", title: "Vitesse de lecture" });
     for (const v of ["0.75", "1", "1.25", "1.5", "1.75", "2"]) {
       const opt = el("option", { value: v, text: `${v}×` });
       if (v === "1.5") opt.selected = true;
       speed.appendChild(opt);
     }
     const closeBtn = el("button", { class: "dc-icon-btn", id: "dc-close", title: "Fermer", text: "✕" });
-    const headerCtrls = el("div", { class: "dc-header-controls" }, [speed, closeBtn]);
+    const headerCtrls = el("div", { class: "dc-header-controls" }, [mic, speed, closeBtn]);
     const header = el("div", { class: "dc-header" }, [title, headerCtrls]);
 
     const empty = el("div", { class: "dc-empty" }, [
@@ -537,6 +357,14 @@ if (!window.__deepcheckLoaded) {
       return null;
     }
 
+    // Bind du micro spécifique avant start (workaround SpeechRecognition)
+    await bindMic();
+    if (aborted || opGen !== recordOpGen) {
+      releaseBindingStream();
+      try { rec.abort(); } catch {}
+      return null;
+    }
+
     const token = ++recognitionToken;
     rec._dcToken = token;
     currentRecFinal = "";
@@ -637,6 +465,7 @@ if (!window.__deepcheckLoaded) {
 
   async function finalizeAndSubmit() {
     recognition = null;
+    releaseBindingStream();
     isRecording = false;
     explicitStop = false;
     const transcript = accumulatedFinal.trim();
@@ -745,6 +574,26 @@ if (!window.__deepcheckLoaded) {
     if (currentAudio) currentAudio.playbackRate = playbackSpeed;
   });
 
+  const micSelect = document.getElementById("dc-mic");
+
+  // Charger préférence + énumérer devices
+  chrome.storage.local.get(["selectedMicId"], (r) => {
+    selectedDeviceId = r.selectedMicId || null;
+    if (micSelect) micSelect.value = selectedDeviceId || "";
+    refreshDevices();
+  });
+
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
+  }
+
+  if (micSelect) {
+    micSelect.addEventListener("change", (e) => {
+      selectedDeviceId = e.target.value || null;
+      chrome.storage.local.set({ selectedMicId: selectedDeviceId });
+    });
+  }
+
   function resetAll() {
     aborted = true;
     submitGeneration++;
@@ -752,6 +601,7 @@ if (!window.__deepcheckLoaded) {
     recordOpGen++;
     silenceRestartCount = 0;
     abortRecognition();
+    releaseBindingStream();
     stopAndCleanupAudio();
     discardLiveBubble();
     accumulatedFinal = "";
@@ -842,7 +692,8 @@ if (!window.__deepcheckLoaded) {
         recordBtn.textContent = "⏹ Stop";
         recordBtn.disabled = false;
         const local = recognition?.processLocally ? " (local)" : "";
-        setStatus(`Enregistrement${local} — parlez maintenant…`, "recording");
+        const dev = getDeviceLabel(selectedDeviceId);
+        setStatus(`REC${local} — ${dev}`, "recording");
       } catch (e) {
         if (myOpGen !== recordOpGen) return;
         console.error(e);

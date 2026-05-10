@@ -277,6 +277,14 @@ async function ensureContentScript(tabId) {
   } catch {
     // pas injecté
   }
+  try {
+    await chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["content.css"]
+    });
+  } catch (e) {
+    console.warn("[Background] insertCSS failed:", e.message);
+  }
   await chrome.scripting.executeScript({
     target: { tabId },
     files: ["content.js"]
