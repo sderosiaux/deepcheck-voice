@@ -5,15 +5,32 @@ if (!window.__deepcheckLoaded) {
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+  // --- État ---
   let recognition = null;
+  let recognitionToken = 0;
   let isRecording = false;
+  let isStarting = false;
+  let isProcessing = false;
+  let explicitStop = false;
+  let aborted = false;
+  let submitGeneration = 0;
+  let lastRecognitionError = null;
+
+  let accumulatedFinal = "";
+  let currentRecFinal = "";
+  let currentRecInterim = "";
+
   let sessionId = null;
   let playbackSpeed = 1.5;
+
   let currentAudio = null;
-  let liveTranscript = "";
+  let currentAudioUrl = null;
+
   let liveBubble = null;
   let liveBubbleContent = null;
   let liveBubbleMeta = null;
+
+  // --- Utils ---
 
   function base64ToArrayBuffer(base64) {
     const binary = atob(base64);
@@ -23,18 +40,45 @@ if (!window.__deepcheckLoaded) {
     return bytes.buffer;
   }
 
-  function playBase64Audio(base64) {
+  function stopAndCleanupAudio() {
     if (currentAudio) {
-      currentAudio.pause();
-      currentAudio.src = "";
+      try { currentAudio.pause(); } catch {}
+      try { currentAudio.src = ""; } catch {}
+      currentAudio = null;
     }
+    if (currentAudioUrl) {
+      URL.revokeObjectURL(currentAudioUrl);
+      currentAudioUrl = null;
+    }
+  }
+
+  function playBase64Audio(base64) {
+    stopAndCleanupAudio();
     const blob = new Blob([base64ToArrayBuffer(base64)], { type: "audio/mpeg" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     audio.playbackRate = playbackSpeed;
-    audio.addEventListener("ended", () => URL.revokeObjectURL(url));
-    audio.play();
+    audio.addEventListener("ended", () => {
+      if (currentAudioUrl === url) {
+        URL.revokeObjectURL(url);
+        currentAudioUrl = null;
+      }
+    });
+    audio.addEventListener("error", () => {
+      if (currentAudioUrl === url) {
+        URL.revokeObjectURL(url);
+        currentAudioUrl = null;
+      }
+    });
+    audio.play().catch((err) => {
+      console.error("[DeepCheck] Audio play failed:", err);
+      if (currentAudioUrl === url) {
+        URL.revokeObjectURL(url);
+        currentAudioUrl = null;
+      }
+    });
     currentAudio = audio;
+    currentAudioUrl = url;
     return audio;
   }
 
@@ -44,7 +88,7 @@ if (!window.__deepcheckLoaded) {
   }
 
   // ---------------------------
-  // STYLES (light theme, Apple/Stripe/Linear)
+  // STYLES
   // ---------------------------
 
   function injectStyles() {
@@ -102,27 +146,10 @@ if (!window.__deepcheckLoaded) {
         background: var(--dc-bg);
       }
 
-      .dc-title {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-      }
+      .dc-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+      .dc-title-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dc-accent); }
 
-      .dc-title-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--dc-accent);
-      }
-
-      .dc-header-controls {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
+      .dc-header-controls { display: flex; align-items: center; gap: 8px; }
 
       .dc-speed {
         appearance: none;
@@ -143,19 +170,15 @@ if (!window.__deepcheckLoaded) {
       .dc-speed:focus { outline: none; border-color: var(--dc-accent); box-shadow: 0 0 0 3px var(--dc-accent-soft); }
 
       .dc-icon-btn {
-        width: 28px;
-        height: 28px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+        width: 28px; height: 28px;
+        display: inline-flex; align-items: center; justify-content: center;
         border: 1px solid var(--dc-border);
         background: var(--dc-bg);
         color: var(--dc-text-muted);
         border-radius: 8px;
         cursor: pointer;
         transition: all .15s ease;
-        font-size: 14px;
-        line-height: 1;
+        font-size: 14px; line-height: 1;
       }
       .dc-icon-btn:hover { background: var(--dc-surface); color: var(--dc-text); border-color: var(--dc-border-strong); }
 
@@ -170,16 +193,10 @@ if (!window.__deepcheckLoaded) {
         min-height: 200px;
         max-height: 440px;
       }
-
       .dc-history::-webkit-scrollbar { width: 6px; }
       .dc-history::-webkit-scrollbar-thumb { background: var(--dc-border-strong); border-radius: 3px; }
 
-      .dc-empty {
-        margin: auto;
-        text-align: center;
-        color: var(--dc-text-muted);
-        padding: 24px 16px;
-      }
+      .dc-empty { margin: auto; text-align: center; color: var(--dc-text-muted); padding: 24px 16px; }
       .dc-empty-title { font-size: 14px; font-weight: 600; color: var(--dc-text); margin-bottom: 4px; }
       .dc-empty-sub { font-size: 13px; color: var(--dc-text-muted); }
 
@@ -187,13 +204,9 @@ if (!window.__deepcheckLoaded) {
       @keyframes dc-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
       .dc-msg-meta {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        display: flex; align-items: center; gap: 8px;
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.04em;
         color: var(--dc-text-soft);
       }
 
@@ -220,10 +233,7 @@ if (!window.__deepcheckLoaded) {
         color: var(--dc-text-muted);
         font-style: italic;
       }
-      .dc-msg-bubble.dc-live.has-text {
-        color: var(--dc-text);
-        font-style: normal;
-      }
+      .dc-msg-bubble.dc-live.has-text { color: var(--dc-text); font-style: normal; }
       .dc-msg-bubble.dc-live::after {
         content: "▍";
         display: inline-block;
@@ -234,37 +244,25 @@ if (!window.__deepcheckLoaded) {
       @keyframes dc-caret { 50% { opacity: 0; } }
 
       .dc-score {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        background: var(--dc-bg);
-        border: 1px solid var(--dc-border);
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-size: 10px;
-        font-weight: 600;
+        display: inline-flex; align-items: center; gap: 4px;
+        background: var(--dc-bg); border: 1px solid var(--dc-border);
+        padding: 2px 8px; border-radius: 999px;
+        font-size: 10px; font-weight: 600;
         color: var(--dc-text-muted);
-        text-transform: none;
-        letter-spacing: 0;
+        text-transform: none; letter-spacing: 0;
       }
       .dc-score.high { color: var(--dc-success); border-color: #bbf7d0; background: var(--dc-success-soft); }
       .dc-score.mid  { color: var(--dc-warn);   border-color: #fde68a; background: #fffbeb; }
       .dc-score.low  { color: var(--dc-danger); border-color: #fecaca; background: var(--dc-danger-soft); }
 
       .dc-meta-rec {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
+        display: inline-flex; align-items: center; gap: 4px;
         color: var(--dc-danger);
-        text-transform: none;
-        letter-spacing: 0;
-        font-weight: 600;
-        font-size: 10px;
+        text-transform: none; letter-spacing: 0;
+        font-weight: 600; font-size: 10px;
       }
       .dc-meta-rec-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
+        width: 6px; height: 6px; border-radius: 50%;
         background: var(--dc-danger);
         animation: dc-pulse 1.4s ease-in-out infinite;
       }
@@ -285,32 +283,19 @@ if (!window.__deepcheckLoaded) {
         color: var(--dc-text);
         padding: 9px 12px;
         border-radius: 8px;
-        font-size: 13px;
-        font-weight: 500;
+        font-size: 13px; font-weight: 500;
         cursor: pointer;
         transition: all .15s ease;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
       }
       .dc-btn:hover:not(:disabled) { background: var(--dc-surface); border-color: var(--dc-border-strong); }
       .dc-btn:active:not(:disabled) { transform: translateY(0.5px); }
       .dc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
       .dc-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--dc-accent-soft); }
 
-      .dc-btn.primary {
-        background: var(--dc-accent);
-        border-color: var(--dc-accent);
-        color: #fff;
-      }
+      .dc-btn.primary { background: var(--dc-accent); border-color: var(--dc-accent); color: #fff; }
       .dc-btn.primary:hover:not(:disabled) { background: var(--dc-accent-hover); border-color: var(--dc-accent-hover); }
-
-      .dc-btn.record {
-        background: var(--dc-danger);
-        border-color: var(--dc-danger);
-        color: #fff;
-      }
+      .dc-btn.record { background: var(--dc-danger); border-color: var(--dc-danger); color: #fff; }
       .dc-btn.record:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
 
       .dc-status {
@@ -319,14 +304,11 @@ if (!window.__deepcheckLoaded) {
         color: var(--dc-text-muted);
         border-top: 1px solid var(--dc-border);
         background: var(--dc-surface);
-        display: flex;
-        align-items: center;
-        gap: 8px;
+        display: flex; align-items: center; gap: 8px;
       }
 
       .dc-rec-dot {
-        width: 8px;
-        height: 8px;
+        width: 8px; height: 8px;
         background: var(--dc-danger);
         border-radius: 50%;
         animation: dc-pulse 1.4s ease-in-out infinite;
@@ -334,8 +316,7 @@ if (!window.__deepcheckLoaded) {
       @keyframes dc-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
 
       .dc-spinner {
-        width: 12px;
-        height: 12px;
+        width: 12px; height: 12px;
         border: 1.5px solid var(--dc-border-strong);
         border-top-color: var(--dc-accent);
         border-radius: 50%;
@@ -433,12 +414,7 @@ if (!window.__deepcheckLoaded) {
     const labelText = type === "tutor" ? "Tuteur" : "Vous";
     const meta = el("div", { class: "dc-msg-meta", text: labelText });
     if (score != null) {
-      meta.appendChild(
-        el("span", {
-          class: `dc-score ${scoreClass(score)}`,
-          text: `${Math.round(score * 100)}%`
-        })
-      );
+      meta.appendChild(el("span", { class: `dc-score ${scoreClass(score)}`, text: `${Math.round(score * 100)}%` }));
     }
     const bubble = el("div", { class: "dc-msg-bubble", text: content });
     const msg = el("div", { class: `dc-msg ${type}` }, [meta, bubble]);
@@ -447,18 +423,15 @@ if (!window.__deepcheckLoaded) {
     return msg;
   }
 
-  // Bulle "live" pendant la transcription en direct
   function createLiveBubble() {
+    discardLiveBubble();
     const history = document.getElementById("dc-history");
     if (!history) return;
     const empty = history.querySelector(".dc-empty");
     if (empty) empty.remove();
 
     const meta = el("div", { class: "dc-msg-meta", text: "Vous" });
-    const recIndicator = el("span", { class: "dc-meta-rec" }, [
-      el("span", { class: "dc-meta-rec-dot" }),
-      "REC"
-    ]);
+    const recIndicator = el("span", { class: "dc-meta-rec" }, [el("span", { class: "dc-meta-rec-dot" }), "REC"]);
     meta.appendChild(recIndicator);
 
     const bubble = el("div", { class: "dc-msg-bubble dc-live", text: "À l'écoute…" });
@@ -513,16 +486,11 @@ if (!window.__deepcheckLoaded) {
     if (!meta) return;
     const existing = meta.querySelector(".dc-score");
     if (existing) existing.remove();
-    meta.appendChild(
-      el("span", {
-        class: `dc-score ${scoreClass(score)}`,
-        text: `${Math.round(score * 100)}%`
-      })
-    );
+    meta.appendChild(el("span", { class: `dc-score ${scoreClass(score)}`, text: `${Math.round(score * 100)}%` }));
   }
 
   // ---------------------------
-  // SPEECH RECOGNITION (on-device si dispo)
+  // SPEECH RECOGNITION
   // ---------------------------
 
   async function tryEnableLocalRecognition(rec) {
@@ -543,10 +511,8 @@ if (!window.__deepcheckLoaded) {
     }
   }
 
-  async function startRecognition() {
-    if (!SR) {
-      throw new Error("Speech Recognition non supporté (Chrome/Edge requis).");
-    }
+  async function createRecognizer() {
+    if (!SR) throw new Error("Speech Recognition non supporté (Chrome/Edge requis).");
 
     const rec = new SR();
     rec.lang = "fr-FR";
@@ -555,9 +521,13 @@ if (!window.__deepcheckLoaded) {
 
     await tryEnableLocalRecognition(rec);
 
-    liveTranscript = "";
+    const token = ++recognitionToken;
+    rec._dcToken = token;
+    currentRecFinal = "";
+    currentRecInterim = "";
 
     rec.onresult = (e) => {
+      if (rec._dcToken !== recognitionToken) return;
       let final = "";
       let interim = "";
       for (let i = 0; i < e.results.length; i++) {
@@ -565,85 +535,145 @@ if (!window.__deepcheckLoaded) {
         if (e.results[i].isFinal) final += t;
         else interim += t;
       }
-      liveTranscript = (final + " " + interim).trim();
-      updateLiveBubble(liveTranscript);
+      currentRecFinal = final;
+      currentRecInterim = interim;
+      const merged = [accumulatedFinal, final, interim].filter(Boolean).join(" ").trim();
+      updateLiveBubble(merged);
     };
 
     rec.onerror = (e) => {
+      if (rec._dcToken !== recognitionToken) return;
       console.error("[DeepCheck] Recognition error:", e.error);
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        addMessage("tutor", "❌ Permission micro refusée. Autorisez le micro pour ce site.");
-        setStatus("Micro refusé.");
-      } else if (e.error === "language-not-supported") {
-        addMessage("tutor", "❌ Modèle vocal français non disponible.");
-        setStatus("Langue non supportée.");
-      } else if (e.error === "no-speech") {
-        // attendu si l'utilisateur ne parle pas — onend gérera
-      } else {
-        setStatus("Erreur reconnaissance: " + e.error);
-      }
+      if (e.error === "no-speech") return;
+      lastRecognitionError = e.error;
     };
 
     rec.onend = () => {
-      onRecognitionEnded();
+      if (rec._dcToken !== recognitionToken) return;
+      handleRecognitionEnd();
     };
 
-    recognition = rec;
     rec.start();
+    recognition = rec;
+    return rec;
   }
 
-  function stopRecognition() {
-    if (recognition) {
-      try { recognition.stop(); } catch {}
+  async function handleRecognitionEnd() {
+    if (currentRecFinal) {
+      accumulatedFinal = (accumulatedFinal + " " + currentRecFinal).trim();
     }
+    currentRecFinal = "";
+    currentRecInterim = "";
+
+    if (aborted) {
+      // Terminer/Close en cours — pas de soumission
+      recognition = null;
+      return;
+    }
+
+    // Erreur terminale (permission, langue) → on stoppe
+    if (lastRecognitionError && lastRecognitionError !== "no-speech") {
+      const err = lastRecognitionError;
+      lastRecognitionError = null;
+      recognition = null;
+      isRecording = false;
+      isStarting = false;
+      explicitStop = false;
+      discardLiveBubble();
+      const recordBtn = document.getElementById("dc-record");
+      if (recordBtn) {
+        recordBtn.textContent = "🎙 Répondre";
+        recordBtn.disabled = false;
+      }
+      if (err === "not-allowed" || err === "service-not-allowed") {
+        setStatus("Permission micro refusée.");
+        addMessage("tutor", "❌ Permission micro refusée. Autorisez le micro pour ce site.");
+      } else if (err === "language-not-supported") {
+        setStatus("Modèle FR indisponible.");
+        addMessage("tutor", "❌ Modèle vocal français non disponible.");
+      } else {
+        setStatus("Erreur reconnaissance: " + err);
+      }
+      return;
+    }
+
+    // Auto-end (silence prolongé) sans stop explicite → on relance un nouveau recognizer
+    if (!explicitStop && isRecording) {
+      try {
+        await createRecognizer();
+        return;
+      } catch (e) {
+        console.warn("[DeepCheck] Restart failed, finalizing:", e.message);
+        // Fallback: on finalise avec ce qu'on a
+      }
+    }
+
+    finalizeAndSubmit();
   }
 
-  async function onRecognitionEnded() {
+  async function finalizeAndSubmit() {
+    recognition = null;
     isRecording = false;
+    explicitStop = false;
+    const transcript = accumulatedFinal.trim();
+    accumulatedFinal = "";
+
     const recordBtn = document.getElementById("dc-record");
     if (recordBtn) recordBtn.textContent = "🎙 Répondre";
-
-    const transcript = liveTranscript.trim();
-    liveTranscript = "";
-    recognition = null;
 
     if (!transcript) {
       discardLiveBubble();
       setStatus("Aucune voix détectée — réessayez.");
+      if (recordBtn) recordBtn.disabled = false;
       return;
     }
 
     finalizeLiveBubble(transcript);
+    isProcessing = true;
+    if (recordBtn) recordBtn.disabled = true;
     setStatus("Le tuteur analyse votre réponse…", "loading");
 
+    const gen = ++submitGeneration;
+
     try {
-      const resp = await send({
-        type: "CONTINUE_ANSWER",
-        payload: { sessionId, transcript }
-      });
+      const resp = await send({ type: "CONTINUE_ANSWER", payload: { sessionId, transcript } });
+
+      // Si l'utilisateur a abort/relancé entre-temps, on ignore la réponse
+      if (gen !== submitGeneration || aborted) return;
 
       if (resp.masteryScore != null) updateLastUserScore(resp.masteryScore);
-
       const tutorMsg = (resp.feedback ? resp.feedback + " " : "") + (resp.question || "");
       if (tutorMsg.trim()) addMessage("tutor", tutorMsg);
-
       if (resp.audioBase64) playBase64Audio(resp.audioBase64);
 
       if (resp.sessionDone) {
+        sessionId = null;
         setStatus("Session terminée ✓");
         addMessage("tutor", "🎉 Session terminée. Vous avez bien progressé.");
-        if (recordBtn) recordBtn.disabled = true;
         const stopBtn = document.getElementById("dc-stop");
-        if (stopBtn) stopBtn.disabled = true;
         const startBtn = document.getElementById("dc-start");
+        if (recordBtn) recordBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = true;
         if (startBtn) startBtn.disabled = false;
       } else {
         setStatus("Écoutez puis cliquez sur « Répondre ».");
+        if (recordBtn) recordBtn.disabled = false;
       }
     } catch (e) {
+      if (gen !== submitGeneration || aborted) return;
       console.error(e);
       setStatus("Erreur: " + e.message);
       addMessage("tutor", "❌ " + e.message);
+      if (recordBtn) recordBtn.disabled = false;
+    } finally {
+      if (gen === submitGeneration) isProcessing = false;
+    }
+  }
+
+  function abortRecognition() {
+    if (recognition) {
+      try { recognition.abort(); } catch {}
+      recognition = null;
     }
   }
 
@@ -680,16 +710,42 @@ if (!window.__deepcheckLoaded) {
   const closeBtn = document.getElementById("dc-close");
   const speedSelect = document.getElementById("dc-speed");
 
+  // Vérification SpeechRecognition tôt
+  if (!SR) {
+    setStatus("Speech Recognition non supporté (Chrome/Edge requis).");
+    startBtn.disabled = true;
+  }
+
   speedSelect.addEventListener("change", (e) => {
     playbackSpeed = parseFloat(e.target.value);
     if (currentAudio) currentAudio.playbackRate = playbackSpeed;
   });
 
+  function resetAll() {
+    aborted = true;
+    submitGeneration++;
+    abortRecognition();
+    stopAndCleanupAudio();
+    discardLiveBubble();
+    accumulatedFinal = "";
+    currentRecFinal = "";
+    currentRecInterim = "";
+    isRecording = false;
+    isStarting = false;
+    isProcessing = false;
+    explicitStop = false;
+    lastRecognitionError = null;
+  }
+
   closeBtn.addEventListener("click", () => {
+    resetAll();
     overlay.style.display = "none";
   });
 
   startBtn.addEventListener("click", async () => {
+    if (!SR) return;
+    if (isStarting || isRecording || isProcessing) return;
+
     startBtn.disabled = true;
     recordBtn.disabled = true;
     stopBtn.disabled = true;
@@ -697,12 +753,16 @@ if (!window.__deepcheckLoaded) {
 
     try {
       const pageText = extractPageText();
+      if (!pageText || pageText.length < 50) {
+        throw new Error("Page sans contenu lisible (article/main/body vide).");
+      }
       setStatus("Génération de la première question…", "loading");
+      aborted = false;
       const resp = await send({ type: "START_SESSION", payload: { pageText } });
 
       sessionId = resp.sessionId;
       if (resp.question) addMessage("tutor", resp.question);
-      playBase64Audio(resp.audioBase64);
+      if (resp.audioBase64) playBase64Audio(resp.audioBase64);
 
       setStatus("Écoutez puis cliquez sur « Répondre ».");
       recordBtn.disabled = false;
@@ -720,45 +780,65 @@ if (!window.__deepcheckLoaded) {
   });
 
   recordBtn.addEventListener("click", async () => {
+    if (!SR) return;
+    if (isStarting || isProcessing) return;
+
     if (!isRecording) {
+      // Démarrage
+      isStarting = true;
+      recordBtn.disabled = true;
+      aborted = false;
+      explicitStop = false;
+      lastRecognitionError = null;
+      accumulatedFinal = "";
+      currentRecFinal = "";
+      currentRecInterim = "";
+      createLiveBubble();
+
       try {
-        createLiveBubble();
-        await startRecognition();
+        await createRecognizer();
+        isStarting = false;
         isRecording = true;
         recordBtn.textContent = "⏹ Stop";
+        recordBtn.disabled = false;
         const local = recognition?.processLocally ? " (local)" : "";
         setStatus(`Enregistrement${local} — parlez maintenant…`, "recording");
       } catch (e) {
         console.error(e);
+        isStarting = false;
         discardLiveBubble();
         setStatus("Erreur: " + e.message);
         addMessage("tutor", "❌ " + e.message);
+        recordBtn.disabled = false;
       }
     } else {
+      // Stop explicite
+      explicitStop = true;
+      isRecording = false;
+      recordBtn.disabled = true;
+      recordBtn.textContent = "🎙 Répondre";
       setStatus("Traitement…", "loading");
-      stopRecognition();
+      if (recognition) {
+        try { recognition.stop(); } catch {}
+      }
     }
   });
 
   stopBtn.addEventListener("click", async () => {
-    stopRecognition();
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio = null;
-    }
-    if (sessionId) {
-      try {
-        await send({ type: "STOP_SESSION", payload: { sessionId } });
-      } catch (e) {
-        console.error(e);
-      }
-      sessionId = null;
-    }
+    if (isProcessing && !sessionId) return;
+    const sid = sessionId;
+    resetAll();
+    sessionId = null;
+    recordBtn.textContent = "🎙 Répondre";
     recordBtn.disabled = true;
     stopBtn.disabled = true;
     startBtn.disabled = false;
     setStatus("Session terminée.");
     addMessage("tutor", "Session terminée. À bientôt !");
+    if (sid) {
+      try { await send({ type: "STOP_SESSION", payload: { sessionId: sid } }); }
+      catch (e) { console.error(e); }
+    }
   });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -767,7 +847,12 @@ if (!window.__deepcheckLoaded) {
       return;
     }
     if (msg.type === "TOGGLE_OVERLAY") {
-      overlay.style.display = overlay.style.display === "none" ? "flex" : "none";
+      if (overlay.style.display === "none") {
+        overlay.style.display = "flex";
+      } else {
+        resetAll();
+        overlay.style.display = "none";
+      }
       sendResponse({ ok: true });
     }
   });

@@ -5,14 +5,36 @@ const MODEL_TTS = "gpt-4o-mini-tts";
 const FETCH_TIMEOUT_MS = 60000;
 
 let OPENAI_API_KEY = null;
+let apiKeyLoadPromise = null;
 
-async function loadApiKey() {
-  const result = await chrome.storage.local.get(["openai_api_key"]);
-  OPENAI_API_KEY = result.openai_api_key || null;
-  return OPENAI_API_KEY;
+function loadApiKey() {
+  if (apiKeyLoadPromise) return apiKeyLoadPromise;
+  apiKeyLoadPromise = chrome.storage.local
+    .get(["openai_api_key"])
+    .then((r) => {
+      OPENAI_API_KEY = r.openai_api_key || null;
+      return OPENAI_API_KEY;
+    })
+    .finally(() => {
+      apiKeyLoadPromise = null;
+    });
+  return apiKeyLoadPromise;
 }
 
 loadApiKey();
+
+// Mutex per-session: serialize CONTINUE_ANSWER and STOP_SESSION on the same session
+const sessionInflight = new Map();
+async function withSessionLock(sessionId, fn) {
+  while (sessionInflight.has(sessionId)) {
+    try { await sessionInflight.get(sessionId); } catch {}
+  }
+  const p = (async () => fn())();
+  sessionInflight.set(sessionId, p);
+  try { return await p; } finally {
+    if (sessionInflight.get(sessionId) === p) sessionInflight.delete(sessionId);
+  }
+}
 
 function arrayBufferToBase64(ab) {
   const bytes = new Uint8Array(ab);
@@ -230,12 +252,17 @@ Réponds en JSON strict avec le champ "concept_covered".
   const result = await tutor(messages);
   messages.push({ role: "assistant", content: JSON.stringify(result) });
 
+  let spoken;
+  try {
+    spoken = await ttsSpeak(
+      (result.feedback ? result.feedback + " " : "") + (result.question || "")
+    );
+  } catch (e) {
+    // Pas de session sauvée si TTS échoue → pas d'orphelin
+    throw e;
+  }
+
   await saveSession(sessionId, { messages, pageText });
-
-  const spoken = await ttsSpeak(
-    (result.feedback ? result.feedback + " " : "") + (result.question || "")
-  );
-
   return { sessionId, audioBase64: spoken, question: result.question };
 }
 
@@ -308,37 +335,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       if (msg.type === "CONTINUE_ANSWER") {
         const { sessionId, transcript } = msg.payload;
-        const session = await getSession(sessionId);
-        if (!session) {
-          sendResponse({ error: "Session inconnue" });
-          return;
-        }
+        const result = await withSessionLock(sessionId, async () => {
+          const session = await getSession(sessionId);
+          if (!session) throw new Error("Session inconnue");
 
-        session.messages.push({
-          role: "user",
-          content: `Transcription utilisateur: "${transcript}". Analyse cette réponse.`
+          session.messages.push({
+            role: "user",
+            content: `Transcription utilisateur: "${transcript}". Analyse cette réponse.`
+          });
+
+          const tutorResult = await tutor(session.messages);
+          session.messages.push({ role: "assistant", content: JSON.stringify(tutorResult) });
+
+          let spoken;
+          try {
+            spoken = await ttsSpeak(
+              (tutorResult.feedback ? tutorResult.feedback + " " : "") + (tutorResult.question || "")
+            );
+          } catch (e) {
+            // TTS failed: don't persist updated history (avoid orphan growth)
+            throw e;
+          }
+
+          await saveSession(sessionId, session);
+
+          if (tutorResult.session_done) {
+            await deleteSession(sessionId);
+          }
+
+          return {
+            audioBase64: spoken,
+            sessionDone: tutorResult.session_done,
+            feedback: tutorResult.feedback,
+            question: tutorResult.question,
+            masteryScore: tutorResult.mastery_score
+          };
         });
-
-        const result = await tutor(session.messages);
-        session.messages.push({ role: "assistant", content: JSON.stringify(result) });
-        await saveSession(sessionId, session);
-
-        const spoken = await ttsSpeak(
-          (result.feedback ? result.feedback + " " : "") + (result.question || "")
-        );
-
-        sendResponse({
-          audioBase64: spoken,
-          sessionDone: result.session_done,
-          feedback: result.feedback,
-          question: result.question,
-          masteryScore: result.mastery_score
-        });
+        sendResponse(result);
         return;
       }
 
       if (msg.type === "STOP_SESSION") {
-        await deleteSession(msg.payload.sessionId);
+        const { sessionId } = msg.payload;
+        await withSessionLock(sessionId, () => deleteSession(sessionId));
         sendResponse({ ok: true });
         return;
       }
