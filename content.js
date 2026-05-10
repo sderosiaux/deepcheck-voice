@@ -393,6 +393,7 @@ if (!window.__deepcheckLoaded) {
   }
 
   function addMessage(type, content, score = null) {
+    if (!content || !String(content).trim()) return null;
     const history = document.getElementById("dc-history");
     if (!history) return null;
     const empty = history.querySelector(".dc-empty");
@@ -552,6 +553,12 @@ if (!window.__deepcheckLoaded) {
         type: "TRANSCRIBE_ONLY",
         payload: { audioBase64 }
       });
+
+      if (!transcript || !transcript.trim()) {
+        setStatus("Aucune voix détectée — réessayez.");
+        addMessage("tutor", "🎙 Je n'ai rien entendu. Cliquez sur « Répondre » et parlez plus près du micro.");
+        return;
+      }
 
       addMessage("user", transcript);
       setStatus("Le tuteur analyse votre réponse…", "loading");
