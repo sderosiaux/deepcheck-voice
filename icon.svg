@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="mic" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+      <feOffset dx="0" dy="2" result="offsetblur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="4" y="4" width="120" height="120" rx="28" ry="28" fill="url(#bg)"/>
+
+  <!-- Subtle highlight on top -->
+  <rect x="4" y="4" width="120" height="60" rx="28" ry="28" fill="#ffffff" fill-opacity="0.08"/>
+
+  <!-- Sound waves (left) -->
+  <g stroke="#ffffff" stroke-opacity="0.5" stroke-width="3" stroke-linecap="round" fill="none">
+    <path d="M 28 56 Q 24 64 28 72"/>
+    <path d="M 20 50 Q 12 64 20 78"/>
+  </g>
+
+  <!-- Sound waves (right) -->
+  <g stroke="#ffffff" stroke-opacity="0.5" stroke-width="3" stroke-linecap="round" fill="none">
+    <path d="M 100 56 Q 104 64 100 72"/>
+    <path d="M 108 50 Q 116 64 108 78"/>
+  </g>
+
+  <!-- Microphone capsule -->
+  <g filter="url(#shadow)">
+    <rect x="50" y="32" width="28" height="50" rx="14" ry="14" fill="url(#mic)"/>
+    <!-- Mic stand arc -->
+    <path d="M 38 64 Q 38 88 64 88 Q 90 88 90 64"
+          stroke="#ffffff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.95"/>
+    <!-- Mic stem -->
+    <line x1="64" y1="88" x2="64" y2="100" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+    <!-- Mic base -->
+    <line x1="52" y1="100" x2="76" y2="100" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Pulse dot (recording indicator) -->
+  <circle cx="92" cy="36" r="9" fill="#ef4444" stroke="#ffffff" stroke-width="3"/>
+</svg>
